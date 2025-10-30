@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir)",
+      "Bash(dir:*)",
+      "Read(//c/Users/Lenovo/Downloads/Search Relevant Case/Search Relevant Case/**)",
+      "Bash(git mv:*)",
+      "Bash(python:*)",
+      "Bash(psql:*)",
+      "Bash(pip show:*)",
+      "Bash(set PGPASSWORD=%DB_PASSWORD%)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
