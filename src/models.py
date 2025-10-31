@@ -8,16 +8,14 @@ from datetime import datetime
 
 class ComplaintSubmission(BaseModel):
     """Model for complaint form submission"""
-    # Complainant Information
-    full_name: Optional[str] = Field(None, max_length=255, description="Full name of complainant")
-    ic_number: Optional[str] = Field(None, max_length=20, description="IC/Passport number")
-    phone_number: str = Field(..., max_length=20, description="Contact phone number")
-    email: Optional[EmailStr] = Field(None, description="Email address")
+    # Complainant Information (ALL OPTIONAL for anonymous complaints)
+    full_name: Optional[str] = Field(None, max_length=255, description="Full name of complainant (optional)")
+    ic_number: Optional[str] = Field(None, max_length=20, description="IC/Passport number (optional)")
+    phone_number: Optional[str] = Field(None, max_length=20, description="Contact phone number (optional)")
+    email: Optional[EmailStr] = Field(None, description="Email address (optional)")
 
     # Complaint Details
     complaint_title: str = Field(..., max_length=500, description="Title/subject of complaint")
-    category: str = Field(..., max_length=100, description="Complaint category")
-    urgency_level: str = Field(default="Sederhana", description="Urgency level: Rendah/Sederhana/Tinggi/Kritikal")
     complaint_description: str = Field(..., min_length=10, description="Detailed complaint description")
 
 
@@ -59,11 +57,11 @@ class ComplaintDetail(BaseModel):
     id: int
     full_name: Optional[str] = None
     ic_number: Optional[str] = None
-    phone_number: str
+    phone_number: Optional[str] = None  # Optional (allows anonymous)
     email: Optional[str] = None
     complaint_title: str
-    category: str
-    urgency_level: str
+    category: Optional[str] = None  # Optional (deprecated)
+    urgency_level: Optional[str] = None  # Optional (deprecated)
     complaint_description: str
     status: str
 

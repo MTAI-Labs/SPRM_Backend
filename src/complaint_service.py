@@ -31,6 +31,7 @@ class ComplaintService:
     def save_complaint(self, complaint_data: Dict) -> int:
         """
         Save complaint to database
+        All complainant fields are optional (allows anonymous complaints)
 
         Args:
             complaint_data: Dictionary with complaint information
@@ -41,11 +42,11 @@ class ComplaintService:
         query = """
         INSERT INTO complaints (
             full_name, ic_number, phone_number, email,
-            complaint_title, category, urgency_level, complaint_description,
+            complaint_title, complaint_description,
             status
         ) VALUES (
             %(full_name)s, %(ic_number)s, %(phone_number)s, %(email)s,
-            %(complaint_title)s, %(category)s, %(urgency_level)s, %(complaint_description)s,
+            %(complaint_title)s, %(complaint_description)s,
             'pending'
         ) RETURNING id
         """

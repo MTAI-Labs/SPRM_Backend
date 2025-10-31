@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, Dict, List, Any
 import uvicorn
@@ -50,6 +51,10 @@ app.add_middleware(
 # Create uploads directory
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Mount uploads directory as static files for frontend access
+# Frontend can access files via: http://localhost:8000/uploads/filename
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Thread pool for background processing
 # max_workers=1 means sequential processing (one complaint at a time)
@@ -654,16 +659,16 @@ async def submit_complaint(
     background_tasks: BackgroundTasks,
     full_name: Optional[str] = Form(None),
     ic_number: Optional[str] = Form(None),
-    phone_number: str = Form(...),
+    phone_number: Optional[str] = Form(None),
     email: Optional[str] = Form(None),
     complaint_title: str = Form(...),
-    category: str = Form(...),
-    urgency_level: str = Form("Sederhana"),
     complaint_description: str = Form(...),
     files: List[UploadFile] = File(default=[])
 ):
     """
     Submit a new complaint with optional file attachments
+
+    All complainant information is now OPTIONAL for anonymous complaints.
 
     This endpoint:
     1. Saves complaint to database
@@ -681,8 +686,6 @@ async def submit_complaint(
             'phone_number': phone_number,
             'email': email,
             'complaint_title': complaint_title,
-            'category': category,
-            'urgency_level': urgency_level,
             'complaint_description': complaint_description
         }
 
@@ -2182,6 +2185,225 @@ async def get_cache_status():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting cache status: {str(e)}")
+
+
+# ============================================================================
+# LETTER GENERATION ENDPOINTS
+# ============================================================================
+
+@app.get("/letters/types")
+async def get_letter_types():
+    """
+    Get available letter types for generation
+
+    Returns list of letter types with descriptions
+    """
+    from letter_templates import get_available_templates
+
+    return {
+        "letter_types": get_available_templates()
+    }
+
+
+@app.get("/letters/template/{letter_type}")
+async def get_letter_template_fields(letter_type: str, complaint_id: Optional[int] = None):
+    """
+    Get editable fields for a letter template with pre-filled values
+
+    **Query Parameters:**
+    - complaint_id: Optional complaint ID to pre-fill values
+
+    **Returns:**
+    Form fields configuration with pre-filled values from complaint data
+    Frontend can render these as editable form fields
+
+    **Example:**
+    GET /letters/template/rujuk_jabatan?complaint_id=123
+    """
+    from letter_templates import get_template_fields, get_template
+    from datetime import datetime
+    import json
+
+    try:
+        # Get template fields configuration
+        fields = get_template_fields(letter_type)
+        if not fields:
+            raise HTTPException(status_code=404, detail=f"Template '{letter_type}' not found")
+
+        # If complaint_id provided, pre-fill values from complaint
+        if complaint_id:
+            query = "SELECT * FROM complaints WHERE id = %s"
+            with db.get_cursor() as cursor:
+                cursor.execute(query, (complaint_id,))
+                complaint = cursor.fetchone()
+
+            if complaint:
+                # Pre-fill auto fields
+                now = datetime.now()
+                hijri_date = "01 Jamadilakhir 1447"  # Placeholder - would need proper Hijri conversion
+
+                if 'auto_filled' in fields:
+                    fields['auto_filled']['rujukan_kami']['value'] = f"SPRM. BPRM. 600-2/3/2 Jld.5({complaint_id})"
+                    fields['auto_filled']['tarikh_surat']['value'] = f"{now.strftime('%d %B %Y')}\n{hijri_date}"
+
+                    complaint_title = complaint.get('complaint_title', '')
+                    fields['auto_filled']['subject_line']['value'] = f"ADUAN BERHUBUNG {complaint_title.upper()}"
+
+        # Get template preview
+        template = get_template(letter_type)
+
+        return {
+            "letter_type": letter_type,
+            "fields": fields,
+            "template_preview": template,
+            "complaint_id": complaint_id
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting template: {str(e)}")
+
+
+@app.post("/complaints/{complaint_id}/letters/generate")
+async def generate_letter(
+    complaint_id: int,
+    request_body: Dict
+):
+    """
+    Generate letter for a complaint with officer-filled data
+
+    **Request Body:**
+    {
+        "letter_type": "rujuk_jabatan",
+        "fields": {
+            "recipient_title": "YBhg. Dato',",
+            "recipient_name": "Datuk Bandar",
+            "recipient_organization": "Majlis Bandaraya Johor Bahru",
+            "recipient_address_line1": "Menara MBJB, No. 1",
+            "recipient_address_line2": "Jalan Lingkaran Dalam",
+            "recipient_address_line3": "Bukit Senyum, 80300 Johor Bahru",
+            "recipient_state": "JOHOR",
+            "salutation": "YBhg. Dato',",
+            "subject_line": "ADUAN BERHUBUNG...",
+            "rujukan_tuan": "",
+            "rujukan_kami": "SPRM. BPRM. 600-2/3/2 Jld.5(123)",
+            "tarikh_surat": "30 Oktober 2025",
+            "officer_title": "Pengarah",
+            "officer_department": "Bahagian Pengurusan Rekod & Maklumat",
+            "cc_line1": "Setiausaha Kerajaan",
+            "cc_line2": "Setiausaha Kerajaan Negeri Johor",
+            ...
+        },
+        "generated_by": "officer_ahmad"
+    }
+
+    **Returns:**
+    Generated letter with all fields filled
+    """
+    from letter_templates import get_template
+
+    try:
+        letter_type = request_body.get('letter_type')
+        fields = request_body.get('fields', {})
+        generated_by = request_body.get('generated_by', 'system')
+
+        # Get template
+        template = get_template(letter_type)
+        if not template:
+            raise HTTPException(status_code=404, detail=f"Template '{letter_type}' not found")
+
+        # Fill template with provided fields
+        letter_content = template
+        for key, value in fields.items():
+            placeholder = '{{' + key + '}}'
+            letter_content = letter_content.replace(placeholder, str(value) if value else '')
+
+        # Save to database
+        from letter_service import LetterService
+        from datetime import datetime
+
+        letter_service = LetterService()
+        letter_id = letter_service.save_generated_letter(
+            complaint_id=complaint_id,
+            letter_type=letter_type,
+            letter_content=letter_content,
+            generated_by=generated_by
+        )
+
+        return {
+            'letter_id': letter_id,
+            'letter_content': letter_content,
+            'letter_type': letter_type,
+            'generated_at': datetime.now().isoformat(),
+            'complaint_id': complaint_id
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating letter: {str(e)}")
+
+
+@app.get("/complaints/{complaint_id}/letters")
+async def get_letter_history(complaint_id: int):
+    """
+    Get all letters generated for a complaint
+
+    Returns:
+    - List of all generated letters with timestamps
+    - Allows officer to view/reprint previous letters
+    """
+    # Validate complaint_id
+    if complaint_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid complaint ID")
+
+    from letter_service import LetterService
+
+    try:
+        # Check if complaint exists
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT id FROM complaints WHERE id = %s", (complaint_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail=f"Complaint {complaint_id} not found")
+
+        letter_service = LetterService()
+        letters = letter_service.get_letter_history(complaint_id)
+
+        return {
+            "complaint_id": complaint_id,
+            "total_letters": len(letters),
+            "letters": letters
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting letter history: {str(e)}")
+
+
+@app.get("/letters/{letter_id}")
+async def get_letter(letter_id: int):
+    """
+    Get specific letter by ID
+
+    Returns:
+    - Full letter content
+    - Metadata (type, generated_by, timestamp)
+    """
+    try:
+        query = "SELECT * FROM generated_letters WHERE id = %s"
+
+        with db.get_cursor() as cursor:
+            cursor.execute(query, (letter_id,))
+            letter = cursor.fetchone()
+
+        if not letter:
+            raise HTTPException(status_code=404, detail="Letter not found")
+
+        return dict(letter)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting letter: {str(e)}")
 
 
 # ============================================================================
