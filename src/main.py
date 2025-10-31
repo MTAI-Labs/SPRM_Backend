@@ -29,7 +29,7 @@ from openrouter_service import OpenRouterService
 from classification_service import ClassificationService
 from case_service import CaseService
 from analytics_service import AnalyticsService
-from models import ComplaintSubmission, ComplaintResponse, ComplaintDetail
+from models import ComplaintSubmission, ComplaintResponse, ComplaintDetail, ComplaintEvaluation, EvaluationOptions, OfficerReview
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -623,6 +623,14 @@ def process_complaint_sync(complaint_id: int, service: ComplaintService):
             print(f"   ✗ 5W1H summary not generated")
 
         print(f"   Final status: {result.get('status', 'unknown')}")
+
+        # Update pre-computed analytics tables
+        try:
+            from simple_analytics import update_analytics_for_complaint
+            update_analytics_for_complaint(complaint_id)
+        except Exception as analytics_error:
+            print(f"⚠️  Failed to update analytics: {analytics_error}")
+
         return result
 
     except Exception as e:
@@ -892,6 +900,14 @@ def reprocess_complaint_after_edit(complaint_id: int):
         print(f"   Akta: {akta or 'N/A'}")
         print(f"   Embedding: Regenerated ({len(embedding)} dimensions)")
 
+        # Invalidate analytics cache after complaint update
+        try:
+            analytics_service = get_analytics_service()
+            analytics_service.invalidate_cache()
+            print(f"🗑️  Analytics cache invalidated (will refresh on next request)")
+        except Exception as cache_error:
+            print(f"⚠️  Failed to invalidate analytics cache: {cache_error}")
+
     except Exception as e:
         print(f"❌ Error re-processing complaint {complaint_id}: {e}")
         import traceback
@@ -1045,6 +1061,7 @@ async def list_complaints(
     status: Optional[str] = None,
     category: Optional[str] = None,
     assigned: Optional[bool] = None,
+    officer_status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ):
@@ -1052,9 +1069,10 @@ async def list_complaints(
     List complaints with optional filtering
 
     Query parameters:
-    - status: Filter by status (pending, classified, processed)
+    - status: Filter by AI processing status (pending, processed)
     - category: Filter by category
     - assigned: Filter by case assignment (true=in a case, false=not in any case, null=all)
+    - officer_status: Filter by officer review status (pending_review, nfa, escalated, investigating, closed)
     - limit: Number of results (default: 50)
     - offset: Pagination offset (default: 0)
     """
@@ -1078,6 +1096,10 @@ async def list_complaints(
         if category:
             query += " AND c.category = %s"
             params.append(category)
+
+        if officer_status:
+            query += " AND c.officer_status = %s"
+            params.append(officer_status)
 
         if assigned is not None:
             if assigned:
@@ -1348,6 +1370,58 @@ async def add_complaint_to_case(
         raise HTTPException(status_code=500, detail=f"Error adding complaint to case: {str(e)}")
 
 
+@app.get("/cases/{case_id}/related")
+async def get_related_cases(case_id: int):
+    """
+    Get related closed cases for a given case
+
+    Returns:
+    - List of similar closed cases that were detected when this case was created
+    - Includes case_number, case_title, similarity_score, and status
+
+    Example response:
+    {
+        "case_id": 42,
+        "case_number": "CASE-2025-0042",
+        "related_cases": [
+            {
+                "case_id": 15,
+                "case_number": "CASE-2024-0015",
+                "case_title": "Kes: Rasuah Tender",
+                "similarity_score": 0.87,
+                "status": "closed",
+                "closed_at": "2024-12-15T10:30:00",
+                "detected_at": "2025-10-30T16:45:00"
+            }
+        ]
+    }
+    """
+    service = get_case_service()
+
+    try:
+        case = service.get_case_details(case_id)
+        if not case:
+            raise HTTPException(status_code=404, detail="Case not found")
+
+        # Get related_cases from database
+        related_cases = case.get('related_cases', [])
+
+        # Parse JSON if it's a string
+        if isinstance(related_cases, str):
+            import json
+            related_cases = json.loads(related_cases)
+
+        return {
+            "case_id": case_id,
+            "case_number": case.get('case_number'),
+            "related_cases": related_cases if related_cases else []
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving related cases: {str(e)}")
+
+
 @app.delete("/cases/{case_id}/complaints/{complaint_id}")
 async def remove_complaint_from_case(case_id: int, complaint_id: int):
     """
@@ -1369,6 +1443,199 @@ async def remove_complaint_from_case(case_id: int, complaint_id: int):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error removing complaint from case: {str(e)}")
+
+
+@app.get("/config/evaluation-options", response_model=EvaluationOptions)
+async def get_evaluation_options():
+    """
+    Get all dropdown options for complaint evaluation form
+
+    Returns options for:
+    - Main sectors
+    - Sub-sectors
+    - Type of information
+    - Source types
+    - Currency types
+    """
+    from subsector_mapping import (
+        get_main_sectors,
+        get_sub_sectors,
+        get_type_of_information_options,
+        get_source_type_options,
+        get_currency_types
+    )
+
+    return EvaluationOptions(
+        main_sectors=get_main_sectors(),
+        sub_sectors=get_sub_sectors(),
+        type_of_information_options=get_type_of_information_options(),
+        source_type_options=get_source_type_options(),
+        currency_types=get_currency_types(),
+        officer_status_options=[
+            "pending_review",
+            "nfa",
+            "escalated",
+            "investigating",
+            "closed"
+        ]
+    )
+
+
+@app.put("/complaints/{complaint_id}/evaluation")
+async def save_complaint_evaluation(complaint_id: int, evaluation: ComplaintEvaluation):
+    """
+    Save officer's evaluation of complaint
+
+    Updates complaint with:
+    - Reviewed/edited 5W1H data
+    - Classification details (type, source, sector, sub-sector)
+    - CRIS details (if applicable)
+    - Selected akta sections
+    - Evaluation metadata (who, when)
+    """
+    try:
+        # Update complaint with evaluation data
+        update_query = """
+        UPDATE complaints
+        SET
+            -- Update 5W1H if edited
+            complaint_title = COALESCE(%s, complaint_title),
+            w1h_what = COALESCE(%s, w1h_what),
+            w1h_when = COALESCE(%s, w1h_when),
+            w1h_where = COALESCE(%s, w1h_where),
+            w1h_how = COALESCE(%s, w1h_how),
+            w1h_why = COALESCE(%s, w1h_why),
+
+            -- Classification
+            type_of_information = %s,
+            source_type = %s,
+            sector = %s,
+            sub_sector = %s,
+
+            -- CRIS details
+            currency_type = %s,
+            property_value = %s,
+            cris_details_others = %s,
+            akta_sections = %s,
+
+            -- Metadata
+            evaluated_at = CURRENT_TIMESTAMP,
+            evaluated_by = %s
+
+        WHERE id = %s
+        RETURNING *
+        """
+
+        with db.get_cursor() as cursor:
+            cursor.execute(update_query, (
+                # 5W1H (only update if provided)
+                evaluation.title,
+                evaluation.what_happened,
+                evaluation.when_happened,
+                evaluation.where_happened,
+                evaluation.how_happened,
+                evaluation.why_done,
+
+                # Classification
+                evaluation.type_of_information,
+                evaluation.source_type,
+                evaluation.sector,
+                evaluation.sub_sector,
+
+                # CRIS details
+                evaluation.currency_type,
+                evaluation.property_value,
+                evaluation.cris_details_others,
+                evaluation.akta_sections,
+
+                # Metadata
+                evaluation.evaluated_by,
+                complaint_id
+            ))
+
+            result = cursor.fetchone()
+
+            if not result:
+                raise HTTPException(status_code=404, detail="Complaint not found")
+
+            return {
+                "message": "Evaluation saved successfully",
+                "complaint_id": complaint_id,
+                "evaluated_at": result['evaluated_at'],
+                "evaluated_by": result['evaluated_by']
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving evaluation: {str(e)}")
+
+
+@app.put("/complaints/{complaint_id}/officer-review")
+async def update_officer_review(complaint_id: int, review: OfficerReview):
+    """
+    Officer manually reviews complaint and updates status
+
+    Status options:
+    - pending_review: Waiting for officer review (default after AI processing)
+    - nfa: No Further Action (not corruption, close complaint)
+    - escalated: Escalate for investigation
+    - investigating: Currently under investigation
+    - closed: Investigation completed and closed
+
+    Request Body:
+    {
+        "officer_status": "nfa",
+        "officer_remarks": "After review, this is not a corruption case...",
+        "reviewed_by": "officer_ahmad"
+    }
+    """
+    try:
+        # Validate status
+        valid_statuses = ["pending_review", "nfa", "escalated", "investigating", "closed"]
+        if review.officer_status not in valid_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+            )
+
+        # Update complaint with officer review
+        with db.get_cursor() as cursor:
+            update_query = """
+            UPDATE complaints
+            SET
+                officer_status = %s,
+                officer_remarks = %s,
+                reviewed_by = %s,
+                reviewed_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING id, officer_status, officer_remarks, reviewed_by, reviewed_at
+            """
+
+            cursor.execute(update_query, (
+                review.officer_status,
+                review.officer_remarks,
+                review.reviewed_by,
+                complaint_id
+            ))
+
+            result = cursor.fetchone()
+
+            if not result:
+                raise HTTPException(status_code=404, detail="Complaint not found")
+
+            return {
+                "message": "Officer review updated successfully",
+                "complaint_id": complaint_id,
+                "officer_status": result['officer_status'],
+                "reviewed_by": result['reviewed_by'],
+                "reviewed_at": result['reviewed_at']
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating officer review: {str(e)}")
 
 
 @app.get("/complaints/{complaint_id}/case")
@@ -1628,39 +1895,51 @@ def load_cases(csv_path: str, max_cases: Optional[int] = None) -> int:
 # ============================================================================
 
 @app.get("/analytics/dashboard")
-async def get_analytics_dashboard(days: int = 30):
+async def get_analytics_dashboard():
     """
-    Get comprehensive analytics dashboard
+    Get pre-computed analytics dashboard (SIMPLE & FAST)
 
-    **What you get:**
-    - Entity analytics (top names, organizations, locations, amounts)
-    - Pattern detection (tender + gold, school + bribery combinations)
-    - Trending keywords
-    - Case-level analytics
-    - AI-generated insights in Bahasa Malaysia
-
-    **Query parameters:**
-    - days: Number of days to analyze (default: 30)
-
-    **Example:**
-    ```
-    GET /analytics/dashboard?days=60
-    ```
+    **How it works:**
+    - Analytics pre-computed and stored when complaints are processed
+    - This endpoint just reads from database tables
+    - No computation needed - instant response!
 
     **Returns:**
-    Comprehensive analytics showing patterns like:
-    - "3 complaints about tender bribery involving gold"
-    - "4 complaints about corruption in education sector"
-    - AI insights highlighting key findings
-    """
-    service = get_analytics_service()
+    {
+        "summary": {
+            "total_complaints": 150,
+            "yes_classification_count": 90,
+            "no_classification_count": 60,
+            "pending_review_count": 45,
+            "nfa_count": 30,
+            "escalated_count": 15,
+            "total_cases": 85
+        },
+        "top_names": [{"name": "Ahmad", "count": 12}, ...],
+        "top_organizations": [{"organization": "JKR", "count": 8}, ...],
+        "top_locations": [{"location": "Kuala Lumpur", "count": 15}, ...],
+        "top_amounts": [{"amount": "RM50,000", "count": 5}, ...],
+        "sectors": [
+            {"sector": "Pembinaan", "complaint_count": 25, "yes_count": 15, "no_count": 10},
+            ...
+        ],
+        "patterns": [
+            {"pattern": "tender + gold", "count": 8},
+            ...
+        ]
+    }
 
+    **Frontend Usage:**
+    Just call this endpoint - data is already computed!
+    No need to wait for computation.
+    """
     try:
-        dashboard = service.get_comprehensive_dashboard(days=days)
-        return dashboard
+        from simple_analytics import get_simple_analytics
+        analytics = get_simple_analytics()
+        return analytics
     except Exception as e:
-        print(f"❌ Error generating analytics: {e}")
-        raise HTTPException(status_code=500, detail=f"Error generating analytics: {str(e)}")
+        print(f"❌ Error getting analytics: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting analytics: {str(e)}")
 
 
 @app.get("/analytics/entities")

@@ -57,43 +57,12 @@ class CaseService:
         case_number = f"CASE-{year}-{str(count + 1).zfill(4)}"
         return case_number
 
-    def extract_keywords(self, text: str, top_n: int = 5) -> List[str]:
+    def generate_case_title(self, complaint_titles: List[str]) -> str:
         """
-        Extract important keywords from text
-
-        Args:
-            text: Input text
-            top_n: Number of top keywords to return
-
-        Returns:
-            List of keywords
-        """
-        # Remove common Malay/English stop words
-        stop_words = {
-            'yang', 'dan', 'di', 'ke', 'pada', 'untuk', 'dengan', 'ini', 'itu',
-            'adalah', 'dari', 'oleh', 'kepada', 'telah', 'akan', 'ada', 'atau',
-            'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
-            'is', 'are', 'was', 'were', 'been', 'be', 'have', 'has', 'had', 'do',
-            'does', 'did', 'can', 'could', 'would', 'should', 'may', 'might'
-        }
-
-        # Extract words (alphanumeric, length > 3)
-        words = re.findall(r'\b\w{4,}\b', text.lower())
-
-        # Filter stop words and count frequency
-        filtered_words = [w for w in words if w not in stop_words]
-        word_freq = Counter(filtered_words)
-
-        # Return top N keywords
-        return [word for word, _ in word_freq.most_common(top_n)]
-
-    def generate_case_title(self, complaint_titles: List[str], keywords: List[str] = None) -> str:
-        """
-        Generate case title from complaint titles and keywords
+        Generate case title from complaint titles
 
         Args:
             complaint_titles: List of complaint titles
-            keywords: Optional list of common keywords
 
         Returns:
             Generated case title
@@ -101,21 +70,13 @@ class CaseService:
         if not complaint_titles:
             return "Untitled Case"
 
-        # If only one complaint, use its title
+        # If only one complaint, use its title (truncated if too long)
         if len(complaint_titles) == 1:
-            return complaint_titles[0]
+            title = complaint_titles[0]
+            return title[:100] if len(title) > 100 else title
 
-        # Combine all titles and extract keywords
-        combined_text = ' '.join(complaint_titles)
-        common_keywords = self.extract_keywords(combined_text, top_n=3)
-
-        # Generate title from keywords
-        if common_keywords:
-            title = ' '.join(common_keywords).title()
-            return f"Kes: {title}" if len(title) > 0 else complaint_titles[0]
-
-        # Fallback to first complaint title
-        return complaint_titles[0]
+        # Multiple complaints - create generic title with count
+        return f"Kes: {len(complaint_titles)} Aduan Berkaitan"
 
     def find_similar_complaints(self, complaint_id: int, top_k: int = 10) -> List[Dict]:
         """
@@ -186,7 +147,8 @@ class CaseService:
             return cursor.fetchone()
 
     def create_case(self, complaint_ids: List[int], case_title: str = None,
-                   auto_grouped: bool = True, added_by: str = 'system') -> Optional[int]:
+                   auto_grouped: bool = True, added_by: str = 'system',
+                   related_cases: List[Dict] = None) -> Optional[int]:
         """
         Create a new case with complaints
 
@@ -195,6 +157,7 @@ class CaseService:
             case_title: Optional case title (auto-generated if not provided)
             auto_grouped: Whether case was auto-grouped
             added_by: 'system' or username
+            related_cases: List of related closed cases for reference
 
         Returns:
             Case ID or None if failed
@@ -220,13 +183,6 @@ class CaseService:
             titles = [c['complaint_title'] for c in complaints]
             case_title = self.generate_case_title(titles)
 
-        # Extract common entities and keywords
-        common_keywords = []
-        for complaint in complaints:
-            if complaint.get('complaint_description'):
-                keywords = self.extract_keywords(complaint['complaint_description'])
-                common_keywords.extend(keywords)
-
         # Get most common classification
         classifications = [c.get('classification') for c in complaints if c.get('classification')]
         primary_classification = Counter(classifications).most_common(1)[0][0] if classifications else None
@@ -237,12 +193,21 @@ class CaseService:
         priorities = [priority_map.get(u, 'medium') for u in urgencies]
         primary_priority = max(priorities, key=['low', 'medium', 'high', 'critical'].index)
 
+        # Prepare related_cases JSON
+        import json
+        related_cases_json = None
+        if related_cases:
+            # Add timestamp to each related case
+            for rc in related_cases:
+                rc['detected_at'] = datetime.now().isoformat()
+            related_cases_json = json.dumps(related_cases)
+
         # Create case
         insert_case = """
         INSERT INTO cases (
             case_number, case_title, primary_complaint_id,
-            common_keywords, classification, priority,
-            complaint_count, auto_grouped, status
+            classification, priority,
+            complaint_count, auto_grouped, related_cases, status
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open')
         RETURNING id
         """
@@ -253,11 +218,11 @@ class CaseService:
                     case_number,
                     case_title,
                     complaint_ids[0],  # Primary complaint
-                    common_keywords[:10],  # Top 10 keywords
                     primary_classification,
                     primary_priority,
                     len(complaint_ids),
-                    auto_grouped
+                    auto_grouped,
+                    related_cases_json
                 ))
                 case_id = cursor.fetchone()['id']
 
@@ -335,9 +300,73 @@ class CaseService:
         with db.get_cursor() as cursor:
             cursor.execute(query)
 
+    def find_similar_closed_cases(self, complaint_id: int, top_k: int = 3) -> List[Dict]:
+        """
+        Find similar cases that are closed (for reference/context)
+
+        Args:
+            complaint_id: Complaint ID to search for
+            top_k: Number of similar closed cases to return
+
+        Returns:
+            List of similar closed cases with similarity scores
+        """
+        if not self.search_engine:
+            return []
+
+        # Get complaint data
+        complaint = self.get_complaint_by_id(complaint_id)
+        if not complaint:
+            return []
+
+        # Prepare search query
+        query_text = complaint.get('complaint_description', '')
+        if complaint.get('w1h_summary'):
+            query_text = f"{query_text} {complaint['w1h_summary']}"
+
+        try:
+            # Search for similar complaints
+            results = self.search_engine.search(query_text=query_text, top_k=top_k * 3)
+
+            # Filter for complaints in CLOSED cases only
+            similar_closed_cases = []
+            seen_case_ids = set()
+
+            for result in results:
+                result_complaint_id = result.get('id')
+                if result_complaint_id == complaint_id:
+                    continue
+
+                similarity_score = result.get('similarity_score', 0)
+                if similarity_score < self.similarity_threshold:
+                    continue
+
+                # Check if this complaint is in a closed case
+                case = self.get_case_for_complaint(result_complaint_id)
+                if case and case.get('status') == 'closed' and case['id'] not in seen_case_ids:
+                    similar_closed_cases.append({
+                        'case_id': case['id'],
+                        'case_number': case['case_number'],
+                        'case_title': case.get('case_title'),
+                        'similarity_score': similarity_score,
+                        'status': 'closed',
+                        'closed_at': case.get('updated_at')
+                    })
+                    seen_case_ids.add(case['id'])
+
+                if len(similar_closed_cases) >= top_k:
+                    break
+
+            return similar_closed_cases
+
+        except Exception as e:
+            print(f"❌ Error searching for similar closed cases: {e}")
+            return []
+
     def auto_group_complaint(self, complaint_id: int) -> Optional[int]:
         """
-        Auto-group complaint into existing case or create new case
+        Auto-group complaint into existing case or create new case.
+        Also checks for similar closed cases for reference.
 
         Args:
             complaint_id: Complaint ID to group
@@ -355,11 +384,23 @@ class CaseService:
         similar_complaints = self.find_similar_complaints(complaint_id, top_k=5)
 
         if not similar_complaints:
-            # No similar complaints - create standalone case
-            case_id = self.create_case([complaint_id], auto_grouped=False)
+            # No similar complaints in open cases
+            # Check for similar CLOSED cases (for reference only)
+            similar_closed = self.find_similar_closed_cases(complaint_id, top_k=3)
+
+            # Create standalone case with related closed cases reference
+            case_id = self.create_case(
+                complaint_ids=[complaint_id],
+                auto_grouped=False,
+                related_cases=similar_closed if similar_closed else None
+            )
+
+            if similar_closed:
+                print(f"ℹ️  New case created with {len(similar_closed)} related closed case(s) for reference")
+
             return case_id
 
-        # Check if similar complaints are in existing cases
+        # Check if similar complaints are in existing OPEN cases
         for similar in similar_complaints:
             similar_id = similar.get('id')
             similarity_score = similar.get('similarity_score', 0)
@@ -367,7 +408,7 @@ class CaseService:
             # High similarity - add to existing case
             if similarity_score >= self.min_similarity_for_auto_group:
                 existing_case = self.get_case_for_complaint(similar_id)
-                if existing_case:
+                if existing_case and existing_case.get('status') != 'closed':
                     self.add_complaint_to_case(
                         existing_case['id'],
                         complaint_id,
@@ -375,6 +416,10 @@ class CaseService:
                         added_by='system'
                     )
                     return existing_case['id']
+
+        # No open case found - create new case
+        # Check for similar closed cases
+        similar_closed = self.find_similar_closed_cases(complaint_id, top_k=3)
 
         # Create new case with similar complaints
         complaint_ids_to_group = [complaint_id]
@@ -386,12 +431,23 @@ class CaseService:
                     complaint_ids_to_group.append(similar_id)
 
         if len(complaint_ids_to_group) > 1:
-            case_id = self.create_case(complaint_ids_to_group, auto_grouped=True)
-            return case_id
+            case_id = self.create_case(
+                complaint_ids=complaint_ids_to_group,
+                auto_grouped=True,
+                related_cases=similar_closed if similar_closed else None
+            )
         else:
             # Create standalone case
-            case_id = self.create_case([complaint_id], auto_grouped=False)
-            return case_id
+            case_id = self.create_case(
+                complaint_ids=[complaint_id],
+                auto_grouped=False,
+                related_cases=similar_closed if similar_closed else None
+            )
+
+        if similar_closed:
+            print(f"ℹ️  Case created with {len(similar_closed)} related closed case(s) for reference")
+
+        return case_id
 
     def get_case_details(self, case_id: int) -> Optional[Dict]:
         """

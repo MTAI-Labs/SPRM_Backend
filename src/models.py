@@ -2,7 +2,7 @@
 Pydantic models for API requests and responses
 """
 from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import datetime
 
 
@@ -81,14 +81,31 @@ class ComplaintDetail(BaseModel):
 
     # AI-Generated Categories
     sector: Optional[str] = None        # Government sector involved
-    akta: Optional[str] = None          # Relevant legislation/act
+    akta: Optional[str] = None          # Relevant legislation/act (single, AI-suggested)
 
     # AI-Generated Summary
     summary: Optional[str] = None       # Executive summary (2-4 sentences)
 
     # Classification fields
-    classification: Optional[str] = None
+    classification: Optional[str] = None  # YES or NO
     classification_confidence: Optional[float] = None
+
+    # Evaluation Fields (filled by officers)
+    type_of_information: Optional[str] = None  # Intelligence, Complaint, Report, etc.
+    source_type: Optional[str] = None           # Public, Agency, Media, etc.
+    sub_sector: Optional[str] = None            # Sub-category of sector
+    currency_type: Optional[str] = None         # MYR, USD, etc.
+    property_value: Optional[float] = None      # Value of property/bribe
+    cris_details_others: Optional[str] = None   # Additional CRIS details
+    akta_sections: Optional[List[str]] = None   # Multiple akta sections (officer-selected)
+    evaluated_at: Optional[datetime] = None     # When evaluated
+    evaluated_by: Optional[str] = None          # Officer who evaluated
+
+    # Officer Review Status
+    officer_status: Optional[str] = None        # pending_review, nfa, escalated, investigating, closed
+    officer_remarks: Optional[str] = None       # Officer notes and remarks
+    reviewed_by: Optional[str] = None           # Officer who reviewed
+    reviewed_at: Optional[datetime] = None      # When reviewed
 
     # Case Assignment
     case_id: Optional[int] = None           # ID of case this complaint belongs to
@@ -100,3 +117,47 @@ class ComplaintDetail(BaseModel):
     document_count: int
     documents: Optional[List[ComplaintDocument]] = None
     similar_cases: Optional[List[SimilarCase]] = None
+
+
+class ComplaintEvaluation(BaseModel):
+    """Model for officer's evaluation of complaint"""
+    # Basic Information (editable from AI suggestions)
+    title: Optional[str] = Field(None, max_length=500)
+    what_happened: Optional[str] = None
+    when_happened: Optional[str] = None
+    where_happened: Optional[str] = None
+    how_happened: Optional[str] = None
+    why_done: Optional[str] = None
+
+    # Classification (required)
+    type_of_information: str = Field(..., description="Intelligence, Complaint, Report, etc.")
+    source_type: str = Field(..., description="Public, Agency, Media, etc.")
+    sector: str = Field(..., description="Main sector")
+    sub_sector: str = Field(..., description="Sub-sector")
+
+    # CRIS Details (required if classification = YES)
+    currency_type: Optional[str] = None
+    property_value: Optional[float] = None
+    cris_details_others: Optional[str] = None
+    organizations: Optional[List[str]] = None
+    akta_sections: List[str] = Field(..., min_items=1, description="At least one akta section required")
+
+    # Metadata
+    evaluated_by: str = Field(..., description="Officer username/ID")
+
+
+class OfficerReview(BaseModel):
+    """Model for officer's manual review and status update"""
+    officer_status: str = Field(..., description="pending_review, nfa, escalated, investigating, closed")
+    officer_remarks: Optional[str] = Field(None, description="Officer notes and remarks")
+    reviewed_by: str = Field(..., description="Officer username/ID")
+
+
+class EvaluationOptions(BaseModel):
+    """Available options for evaluation dropdowns"""
+    main_sectors: List[str]
+    sub_sectors: List[str]
+    type_of_information_options: List[str]
+    source_type_options: List[str]
+    currency_types: List[str]
+    officer_status_options: List[str]

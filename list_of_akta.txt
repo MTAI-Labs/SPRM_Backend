@@ -1,0 +1,67 @@
+Seksyen 161	Mengambil suapan bersangkut perbuatan resmi
+Seksyen 162	Mengambil suapan
+Seksyen 163	Mengambil suapan dengan pengaruh
+Seksyen 164	Hukuman bersubahat menerima suapan
+Seksyen 165	Menerima barang berharga
+Seksyen 167	Merangka dokumen palsu
+Seksyen 168	Menjalankan perniagaan
+Seksyen 169	Memberi menawar harta
+Seksyen 170	Menyamar penjawat awam
+Seksyen 171	Menyamar dengan pakaian seragam
+Seksyen 186	Menghalang tugas kakitangan awam
+Seksyen 187	Tiada membantu kakitangan awam
+Seksyen 191	Memberi keterangan palsu
+Seksyen 192	Membuat keterangan bohong
+Seksyen 193	Hukuman atas keterangan palsu
+Seksyen 194	Memberi keterangan palsu hukuman kematian
+Seksyen 195	Memberi keterangan palsu hukuman penjara
+Seksyen 196	Mengguna keterangan yang diketahui palsu
+Seksyen 197	Mengeluarkan atau tandatangan sijil palsu
+Seksyen 198	Menggunakan sijil mengandungi butiran palsu
+Seksyen 199	Membuat kenyataan palsu
+Seksyen 200	Mengguna sebagai betul pengakuan palsu
+Seksyen 201	Menghilangkan atau memberi maklumat palsu
+Seksyen 213	Menerima pemberian untuk melindungi pesalah
+Seksyen 214	Menawar atau memulangkan harta untuk melindungi pesalah
+Seksyen 215	Mengambil pemberian kerana tolong dapatkan balik harta curi
+Seksyen 405	Pecah amanah jenayah
+Seksyen 406	Hukuman pecah amanah jenayah
+Seksyen 407	Pecah amanah harta dan barang-barang
+Seksyen 408	Pecah amanah jenayah oleh kerani atau orang gaji
+Seksyen 409	Pecah amanah penjawat awam, saudagar, wakil
+Seksyen 415	Tipu
+Seksyen 416	Tipu dengan menyamar diri
+Seksyen 419	Hukuman kesalahan tipu
+Seksyen 420	Tipu dengan curang supaya menyerah harta
+Seksyen 470	Dokumen yang semua atau sebahagiannya palsu
+Seksyen 471	Menggunakan dokumen palsu sebagai benar
+Seksyen 384	Hukuman kerana paksa serah harta (pemerasan)
+Seksyen 385	Menakutkan orang dengan bencana pemerasan
+Seksyen 386	Hukuman pemerasan menyebabkan kematian atau luka parah
+Seksyen 387	Pemerasan menyebabkan kematian atau luka parah
+Seksyen 388	Hukuman pemerasan dengan ugutan
+Seksyen 389	Hukuman pemerasan menakutkan orang dengan kesalahan
+Seksyen 403	Menyalahguna harta dengan curang
+Seksyen 404	Menggunakan harta orang mati dengan curang
+Seksyen 464	Membuat dokumen palsu
+Seksyen 466	Memalsukan rekod Mahkamah atau daftar peranakan
+Seksyen 467	Pemalsuan suratan berharga atau surat wasiat
+Seksyen 468	Pemalsuan dengan tujuan menipu
+Seksyen 469	Pemalsuan untuk memburokkan nama baik orang
+Seksyen 472	Membuat memiliki cop, mohor dan lain-lain untuk melakukan pemalsuan
+Seksyen 473	Hukuman Membuat memiliki cop, mohor dan lain-lain untuk melakukan pemalsuan
+Seksyen 474	Memiliki suratan berharga atau surat wasiat yang diketahui palsu
+Seksyen 475	Hukuman Memalsukan alamat atau tanda untuk sahkan dokumen
+Seksyen 476	Memalsukan alamat atau tanda untuk sahkan dokumen
+Seksyen 477A	Memalsukan akaun
+Seksyen 378	Curi
+Lain-lain Seksyen	Lain-lain Seksyen
+Seksyen 417	Hukuman melakukan penipuan
+Seksyen 465	Hukuman melakukan pemalsuan
+Seksyen 463	Pemalsuan Dokumen
+Seksyen 89	Seksyen 89 - Keterangan Mengelirukan
+Seksyen 48	Seksyen 48 AMLFPUAA 2001 - Kuasa Menyiasat Berhubung Dengan Sesuatu Institusi Kewangan
+Seksyen 50	Seksyen 50 AMLFPUAA 2001 - Penyitaan Harta Alih Dalam Institusi Kewangan
+Seksyen 51	Seksyen 51 AMLFPUAA 2001 - Penyitaan Harta Tak Alih
+Seksyen 53	Seksyen 53 AMLFPUAA 2001 - Larangan beruurusan dengan harta di luar Malaysia
+Seksyen 60	Seksyen 60 AMLFPUAA 2001 - Pelepasan Harta Yang Disita

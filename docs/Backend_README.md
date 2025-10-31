@@ -805,7 +805,49 @@ curl "http://localhost:8000/cases/1"
 
 ---
 
-### 13. Get Complaint's Case
+### 13. Get Related Cases
+
+**Endpoint:** `GET /cases/{case_id}/related`
+
+**Description:** Get related closed cases that were similar when this case was created. This helps officers identify recurring issues or patterns.
+
+**Response:**
+```json
+{
+  "case_id": 42,
+  "case_number": "CASE-2025-0042",
+  "related_cases": [
+    {
+      "case_id": 15,
+      "case_number": "CASE-2024-0015",
+      "case_title": "Kes: Rasuah Tender",
+      "similarity_score": 0.87,
+      "status": "closed",
+      "closed_at": "2024-12-15T10:30:00",
+      "detected_at": "2025-10-30T16:45:00"
+    },
+    {
+      "case_id": 23,
+      "case_number": "CASE-2024-0023",
+      "case_title": "Kes: Tender Projek JKR",
+      "similarity_score": 0.79,
+      "status": "closed",
+      "closed_at": "2024-11-20T14:20:00",
+      "detected_at": "2025-10-30T16:45:00"
+    }
+  ]
+}
+```
+
+**Use Cases:**
+- Display warning banner when viewing a case that has similar closed cases
+- Allow officers to review previous investigations for context
+- Identify repeat offenders or recurring patterns
+- Help decide whether to reopen an old case vs. creating a new one
+
+---
+
+### 14. Get Complaint's Case
 
 **Endpoint:** `GET /complaints/{complaint_id}/case`
 
@@ -823,7 +865,7 @@ curl "http://localhost:8000/cases/1"
 
 ---
 
-### 14. Health Check
+### 15. Health Check
 
 **Endpoint:** `GET /health`
 
@@ -920,7 +962,10 @@ CREATE TABLE cases (
     -- Status and classification
     status VARCHAR(50) DEFAULT 'open',              -- open, investigating, closed
     priority VARCHAR(50) DEFAULT 'medium',          -- low, medium, high, critical
-    classification VARCHAR(50),                     -- CRIS or NFA
+    classification VARCHAR(50),                     -- YES or NO (corruption indicator)
+
+    -- Related cases tracking
+    related_cases JSONB DEFAULT '[]'::jsonb,        -- Array of similar closed cases for reference
 
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -932,6 +977,33 @@ CREATE TABLE cases (
     auto_grouped BOOLEAN DEFAULT TRUE               -- TRUE if auto-grouped by system
 );
 ```
+
+**Related Cases Feature:**
+
+When a new complaint is processed, the system:
+1. Searches for similar complaints in **open cases** first
+2. If found, adds to existing open case
+3. If not found, searches for similar **closed cases** for reference
+4. Creates new case with `related_cases` array containing:
+   ```json
+   [
+     {
+       "case_id": 15,
+       "case_number": "CASE-2024-0015",
+       "case_title": "Kes: Rasuah Tender",
+       "similarity_score": 0.87,
+       "status": "closed",
+       "closed_at": "2024-12-15T10:30:00",
+       "detected_at": "2025-10-30T16:45:00"
+     }
+   ]
+   ```
+
+This allows officers to:
+- See if similar cases were previously investigated
+- Review closed case details for context
+- Identify recurring patterns or repeat offenders
+- Make informed decisions about reopening old cases
 
 ### Case-Complaints Junction Table
 

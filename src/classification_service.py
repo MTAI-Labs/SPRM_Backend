@@ -1,5 +1,5 @@
 """
-Classification service - Classify complaints as CRIS or NFA based on 5W1H summary
+Classification service - Classify complaints as YES (corruption) or NO (not corruption) based on 5W1H summary
 """
 import os
 from typing import Optional, Dict
@@ -7,7 +7,7 @@ from openrouter_service import OpenRouterService
 
 
 class ClassificationService:
-    """Service to classify complaints as CRIS (corruption) or NFA (no further action)"""
+    """Service to classify complaints as YES (corruption) or NO (not corruption)"""
 
     def __init__(self, openrouter_service: Optional[OpenRouterService] = None):
         """
@@ -22,7 +22,7 @@ class ClassificationService:
 
     def classify_from_5w1h(self, w1h_summary, complaint_description: str = "") -> Optional[Dict]:
         """
-        Classify complaint as CRIS or NFA based on 5W1H summary
+        Classify complaint as YES (corruption) or NO (not corruption) based on 5W1H summary
 
         Args:
             w1h_summary: The 5W1H summary (can be string or dict with 'full_text')
@@ -70,17 +70,17 @@ class ClassificationService:
         prompt = f"""Anda adalah sistem klasifikasi aduan SPRM yang mahir.
 
 Tugas anda adalah untuk mengklasifikasikan aduan sebagai:
-- **CRIS** (Case Requiring Investigation - kes yang memerlukan siasatan kerana ada unsur rasuah)
-- **NFA** (No Further Action - tiada tindakan lanjut kerana tiada unsur rasuah yang jelas)
+- **YES** (Ada unsur rasuah - kes yang memerlukan siasatan)
+- **NO** (Tiada unsur rasuah - tiada tindakan lanjut diperlukan)
 
-Kriteria CRIS (unsur rasuah):
+Kriteria YES (ada unsur rasuah):
 1. Ada pertukaran wang/nilai antara pihak
 2. Ada penyalahgunaan kuasa untuk kepentingan peribadi
 3. Ada kronisme, nepotisme, atau favoritisme
 4. Ada bukti atau petunjuk aktiviti rasuah
 5. Melibatkan pegawai awam atau tender kerajaan
 
-Kriteria NFA (bukan rasuah):
+Kriteria NO (tiada unsur rasuah):
 1. Aduan tentang perkhidmatan lemah sahaja
 2. Tiada pertukaran wang atau nilai
 3. Tiada unsur rasuah yang jelas
@@ -98,9 +98,9 @@ RINGKASAN 5W1H:
 Analisa dengan teliti dan berikan klasifikasi dalam format JSON:
 
 {
-    "classification": "CRIS" atau "NFA",
+    "classification": "YES" atau "NO",
     "confidence": 0.85,
-    "reasoning": "Penjelasan ringkas mengapa diklasifikasikan sebagai CRIS/NFA",
+    "reasoning": "Penjelasan ringkas mengapa diklasifikasikan sebagai YES/NO",
     "corruption_indicators": ["indikator 1", "indikator 2"] atau [],
     "recommendation": "Cadangan tindakan seterusnya"
 }
@@ -133,7 +133,7 @@ Berikan HANYA JSON (tanpa penjelasan tambahan):"""
 
             # Normalize classification
             classification = parsed['classification'].upper()
-            if classification not in ['CRIS', 'NFA']:
+            if classification not in ['YES', 'NO']:
                 print(f"⚠️  Invalid classification value: {classification}")
                 return None
 

@@ -348,24 +348,42 @@ class ComplaintService:
                     )
                     result['classification'] = classification_result
 
-                # Step 2: Generate sector
+                # Step 2: Generate sector and sub-sector
                 sector = None
+                sub_sector = None
                 if result.get('w1h_summary'):
-                    print(f"🏢 Determining sector for complaint {complaint_id}...")
-                    sector = self.vllm_service.generate_sector(
+                    print(f"🏢 Determining sector and sub-sector for complaint {complaint_id}...")
+                    sector_result = self.vllm_service.generate_sector_and_subsector(
                         w1h_summary=result['w1h_summary'],
                         complaint_text=complaint_text
                     )
-                    result['sector'] = sector
+                    if sector_result:
+                        sector = sector_result['sector']
+                        sub_sector = sector_result['sub_sector']
+                        result['sector'] = sector
+                        result['sub_sector'] = sub_sector
+                    else:
+                        print(f"⚠️  Sector/sub-sector generation failed, using fallback")
+                        result['sector'] = None
+                        result['sub_sector'] = None
 
-                # Step 3: Generate akta (legislation)
+                # Step 3: Generate akta (legislation) using two-step category approach
                 akta = None
                 if result.get('w1h_summary'):
                     print(f"⚖️  Determining akta for complaint {complaint_id}...")
+                    # Try to load akta simple service
+                    akta_service = None
+                    try:
+                        from akta_simple_service import AktaSimpleService
+                        akta_service = AktaSimpleService()
+                    except Exception as e:
+                        print(f"⚠️  Could not load AktaSimpleService: {e}")
+
                     akta = self.vllm_service.generate_akta(
                         w1h_summary=result['w1h_summary'],
                         complaint_text=complaint_text,
-                        sector=sector
+                        sector=sector,
+                        akta_service=akta_service
                     )
                     result['akta'] = akta
 
@@ -408,7 +426,7 @@ class ComplaintService:
                     except Exception as e:
                         print(f"⚠️  Error generating embedding: {e}")
 
-                # Update database with results (including classification, structured 5W1H, sector, akta, summary, and embedding)
+                # Update database with results (including classification, structured 5W1H, sector, sub-sector, akta, summary, and embedding)
                 update_query = """
                 UPDATE complaints
                 SET extracted_data = %s,
@@ -420,12 +438,14 @@ class ComplaintService:
                     w1h_why = %s,
                     w1h_how = %s,
                     sector = %s,
+                    sub_sector = %s,
                     akta = %s,
                     summary = %s,
                     embedding = %s,
                     classification = %s,
                     classification_confidence = %s,
                     status = 'processed',
+                    officer_status = 'pending_review',
                     processed_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 """
@@ -478,6 +498,7 @@ class ComplaintService:
                         w1h_why,
                         w1h_how,
                         sector,
+                        sub_sector,
                         akta,
                         summary_text,
                         embedding,

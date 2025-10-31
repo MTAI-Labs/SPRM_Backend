@@ -366,6 +366,11 @@ JSON Response:"""
             results["w1h_summary"] = w1h_summary
 
         # Mark as successful if at least one step worked
-        results["success"] = bool(extracted_data or w1h_summary or results["document_extractions"])
+        # Check if any document extraction actually succeeded (not just if list exists)
+        has_successful_doc_extraction = any(
+            doc.get('extracted_content') is not None
+            for doc in results["document_extractions"]
+        )
+        results["success"] = bool(extracted_data or w1h_summary or has_successful_doc_extraction)
 
         return results

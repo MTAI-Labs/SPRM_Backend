@@ -7,6 +7,7 @@ from typing import Dict, Optional, List
 import json
 from pathlib import Path
 import base64
+import PyPDF2
 
 
 class OpenRouterService:
@@ -159,9 +160,43 @@ class OpenRouterService:
             print(f"❌ Unexpected error: {e}")
             return None
 
+    def _extract_text_from_pdf(self, file_path: str) -> Optional[str]:
+        """
+        Extract text from PDF using PyPDF2
+
+        Args:
+            file_path: Path to PDF file
+
+        Returns:
+            Extracted text or None if failed
+        """
+        try:
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                text_parts = []
+
+                # Extract text from all pages
+                for page_num in range(len(pdf_reader.pages)):
+                    page = pdf_reader.pages[page_num]
+                    text = page.extract_text()
+                    if text.strip():
+                        text_parts.append(f"--- Page {page_num + 1} ---\n{text}")
+
+                if text_parts:
+                    full_text = "\n\n".join(text_parts)
+                    print(f"✅ Extracted {len(text_parts)} page(s) from PDF: {Path(file_path).name}")
+                    return full_text
+                else:
+                    print(f"⚠️  No text found in PDF (might be scanned/image-based): {Path(file_path).name}")
+                    return None
+
+        except Exception as e:
+            print(f"❌ PDF extraction error for {Path(file_path).name}: {e}")
+            return None
+
     def extract_from_document(self, file_path: str) -> Optional[Dict]:
         """
-        Extract text/data from document using vision model
+        Extract text/data from document using vision model (images) or text extraction (PDFs)
 
         Args:
             file_path: Path to the document file
@@ -213,13 +248,62 @@ Ekstrak dan kembalikan dalam format JSON:
                     return {"text": result_text, "raw": True}
             return None
 
-        # For PDFs (can't process directly, return placeholder)
+        # For PDFs, extract text using PyPDF2
         elif file_ext == '.pdf':
-            print(f"⚠️  PDF processing not available in vision model, file: {Path(file_path).name}")
-            return {
-                "text": f"[PDF file: {Path(file_path).name} - requires OCR processing]",
-                "note": "PDF text extraction not available with current setup"
-            }
+            pdf_text = self._extract_text_from_pdf(file_path)
+
+            if pdf_text:
+                # Send extracted text to OpenRouter for structured analysis
+                prompt = f"""Analisa teks dokumen PDF berikut dan ekstrak maklumat penting dalam format JSON.
+
+TEKS DARI PDF:
+{pdf_text[:4000]}
+
+Ekstrak dan kembalikan dalam format JSON:
+{{
+    "text": "ringkasan kandungan utama",
+    "entities": {{
+        "names": ["nama-nama yang disebutkan"],
+        "locations": ["lokasi-lokasi"],
+        "dates": ["tarikh-tarikh"],
+        "amounts": ["jumlah wang atau nilai"],
+        "organizations": ["organisasi atau syarikat"]
+    }},
+    "description": "penerangan ringkas tentang kandungan dokumen"
+}}"""
+
+                result_text = self.call_openrouter(
+                    prompt=prompt,
+                    max_tokens=2000,
+                    temperature=0.2
+                )
+
+                if result_text:
+                    try:
+                        clean_text = result_text.strip()
+                        if clean_text.startswith('```json'):
+                            clean_text = clean_text.split('```json')[1].split('```')[0].strip()
+                        elif clean_text.startswith('```'):
+                            clean_text = clean_text.split('```')[1].split('```')[0].strip()
+
+                        extracted = json.loads(clean_text)
+                        # Add raw PDF text for context
+                        extracted['raw_pdf_text'] = pdf_text
+                        print(f"✅ PDF extraction and analysis completed: {Path(file_path).name}")
+                        return extracted
+                    except json.JSONDecodeError:
+                        print(f"⚠️  Could not parse JSON, returning raw PDF text")
+                        return {"text": pdf_text, "raw": True}
+                else:
+                    # Fallback: return raw text without AI analysis
+                    return {"text": pdf_text, "raw": True}
+            else:
+                # PDF extraction failed (might be scanned/image-based)
+                print(f"⚠️  PDF appears to be image-based or empty: {Path(file_path).name}")
+                return {
+                    "text": f"[PDF file: {Path(file_path).name} - appears to be scanned/image-based, OCR required]",
+                    "note": "Text extraction failed - document may be scanned"
+                }
 
         else:
             print(f"⚠️  Unsupported file type: {file_ext}")
@@ -381,16 +465,16 @@ JSON sahaja, tanpa penjelasan tambahan:"""
 
         return None
 
-    def generate_sector(self, w1h_summary: Dict, complaint_text: str) -> Optional[str]:
+    def generate_sector_and_subsector(self, w1h_summary: Dict, complaint_text: str) -> Optional[Dict]:
         """
-        Determine the government sector this complaint falls under
+        Determine both main sector and sub-sector for this complaint
 
         Args:
             w1h_summary: The structured 5W1H data
             complaint_text: Original complaint description
 
         Returns:
-            Sector name as string
+            Dict with 'sector' and 'sub_sector' keys, or None if failed
         """
         # Get full text for analysis
         if isinstance(w1h_summary, dict):
@@ -398,7 +482,7 @@ JSON sahaja, tanpa penjelasan tambahan:"""
         else:
             w1h_text = w1h_summary or ''
 
-        prompt = f"""Berdasarkan aduan berikut, tentukan SATU sektor kerajaan yang paling berkaitan.
+        prompt = f"""Berdasarkan aduan rasuah berikut, tentukan SATU Main Sector dan SATU Sub Sector yang paling berkaitan.
 
 **Ringkasan 5W1H:**
 {w1h_text}
@@ -406,40 +490,107 @@ JSON sahaja, tanpa penjelasan tambahan:"""
 **Deskripsi Asal:**
 {complaint_text[:500]}
 
-**Pilih dari 10 sektor berikut:**
-1. Pendidikan (Education) - Sekolah, universiti, pelajar, guru, pendaftaran
-2. Kesihatan (Health) - Hospital, klinik, ubat-ubatan, perkhidmatan kesihatan
-3. Pengangkutan (Transportation) - Jalan raya, pengangkutan awam, lesen memandu, JPJ
-4. Pembinaan & Infrastruktur (Construction & Infrastructure) - Kontrak pembinaan, projek kerajaan, JKR
-5. Perkhidmatan Awam (Public Service) - Pegawai kerajaan, birokrasi, perkhidmatan pentadbiran
-6. Kewangan & Cukai (Finance & Tax) - LHDN, kastam, tender, subsidi, peruntukan
-7. Polis & Keselamatan (Police & Security) - PDRM, imigresen, penguatkuasaan undang-undang
-8. Tanah & Perumahan (Land & Housing) - Tanah kerajaan, perumahan awam, pejabat tanah
-9. Alam Sekitar (Environment) - Kebersihan, sampah, hutan, air, pencemaran
-10. Lain-lain (Others) - Sektor yang tidak sesuai dengan kategori di atas
+**Main Sector (Pilih 1 dari 10):**
+1. Business and Industry / Perniagaan dan Industri
+2. Financing and Revenue / Pembiayaan dan Pendapatan
+3. Defence and Security / Pertahanan dan Keselamatan
+4. Investment / Pelaburan
+5. Services / Perkhidmatan
+6. Legal Affairs and Judiciary / Hal Ehwal Perundangan dan Kehakiman
+7. Licencing and Permit / Perlesenan dan Permit
+8. Procurement / Perolehan
+9. Enforcement / Penguatkuasaan
+10. Administration / Pentadbiran
 
-Jawab dengan NAMA SEKTOR sahaja (contoh: "Pendidikan" atau "Kewangan & Cukai"). Jangan beri penjelasan tambahan."""
+**Sub Sector (Pilih 1 dari 21):**
+1. Perundangan Sistem Prosedur dan Peraturan
+2. Umum / Pelbagai
+3. Perundingan
+4. Perkhidmatan
+5. Kerja dan Gred
+6. Bekalan
+7. Pelacuran / Rumah Urut
+8. Penyeludupan / Barang Keluar Masuk
+9. Aktiviti Jenayah Umum
+10. Penguatkuasaan Lesen
+11. Perjudian / Kongsi Gelap
+12. Dadah / Narkotik
+13. Jalanraya / Kenderaan
+14. Pati / Pencerobohan
+15. Perburuan
+16. Persenjataan
+17. Perlombongan
+18. Pembalakan
+19. Pengangkutan
+20. Tanah
+21. Perniagaan
 
-        result = self.call_openrouter(prompt=prompt, max_tokens=100, temperature=0.2)
+Berikan jawapan dalam format JSON:
+{{
+    "main_sector": "Procurement / Perolehan",
+    "sub_sector": "Bekalan"
+}}
+
+Jawab HANYA dengan JSON (tanpa penjelasan tambahan)."""
+
+        result = self.call_openrouter(prompt=prompt, max_tokens=150, temperature=0.2)
 
         if result:
-            sector = result.strip()
-            print(f"✅ Sector determined: {sector}")
-            return sector
+            try:
+                import json
+                # Clean response
+                clean_result = result.strip()
+                if clean_result.startswith('```json'):
+                    clean_result = clean_result.split('```json')[1].split('```')[0].strip()
+                elif clean_result.startswith('```'):
+                    clean_result = clean_result.split('```')[1].split('```')[0].strip()
+
+                parsed = json.loads(clean_result)
+
+                sector = parsed.get('main_sector', '').strip()
+                sub_sector = parsed.get('sub_sector', '').strip()
+
+                if sector and sub_sector:
+                    print(f"✅ Sector determined: {sector}")
+                    print(f"✅ Sub-sector determined: {sub_sector}")
+                    return {
+                        'sector': sector,
+                        'sub_sector': sub_sector
+                    }
+                else:
+                    print(f"⚠️  Incomplete sector/sub-sector in response")
+                    return None
+
+            except json.JSONDecodeError as e:
+                print(f"⚠️  Failed to parse sector JSON: {e}")
+                print(f"Raw response: {result[:200]}")
+                return None
 
         return None
 
-    def generate_akta(self, w1h_summary: Dict, complaint_text: str, sector: Optional[str] = None) -> Optional[str]:
+    def generate_sector(self, w1h_summary: Dict, complaint_text: str) -> Optional[str]:
         """
-        Determine the relevant Malaysian legislation (Akta) for this complaint
+        Legacy method - now calls generate_sector_and_subsector and returns only main sector
+        Kept for backward compatibility
+        """
+        result = self.generate_sector_and_subsector(w1h_summary, complaint_text)
+        if result:
+            return result['sector']
+        return None
+
+    def generate_akta(self, w1h_summary: Dict, complaint_text: str, sector: Optional[str] = None,
+                      akta_service=None) -> Optional[str]:
+        """
+        Determine the relevant Malaysian legislation section using two-step AI
 
         Args:
             w1h_summary: The structured 5W1H data
             complaint_text: Original complaint description
             sector: The determined sector (optional, helps with context)
+            akta_service: AktaSimpleService instance
 
         Returns:
-            Akta name as string
+            Akta section string (e.g., "Seksyen 161 - Mengambil suapan bersangkut perbuatan resmi")
         """
         # Get full text for analysis
         if isinstance(w1h_summary, dict):
@@ -447,34 +598,110 @@ Jawab dengan NAMA SEKTOR sahaja (contoh: "Pendidikan" atau "Kewangan & Cukai"). 
         else:
             w1h_text = w1h_summary or ''
 
-        sector_context = f"\n**Sektor:** {sector}" if sector else ""
+        sector_context = f"Sektor: {sector}. " if sector else ""
 
-        prompt = f"""Berdasarkan aduan rasuah/salah laku berikut, tentukan SATU akta Malaysia yang paling berkaitan.
+        # Step 1: AI determines category
+        print("Step 1: Determining category...")
+        category_prompt = f"""Berdasarkan aduan rasuah berikut, tentukan SATU kategori kesalahan yang paling sesuai.
+
+{sector_context}
 
 **Ringkasan 5W1H:**
-{w1h_text}{sector_context}
+{w1h_text}
 
-**Deskripsi Asal:**
+**Deskripsi:**
 {complaint_text[:500]}
 
-**Pilih dari 10 akta berikut:**
-1. Akta Suruhanjaya Pencegahan Rasuah Malaysia 2009 (SPRM Act) - Rasuah, suapan, salah guna kuasa
-2. Akta Keterangan 1950 (Evidence Act) - Bukti, prosedur keterangan
-3. Akta Kesalahan Keselamatan (Langkah-Langkah Khas) 2012 (SOSMA) - Ancaman keselamatan, jenayah terancang
-4. Akta Pencegahan Pengubahan Wang Haram, Pencegahan Pembiayaan Keganasan dan Hasil Daripada Aktiviti Haram 2001 (AMLATFPUUA) - Wang haram, pembiayaan keganasan
-5. Akta Kontrak Kerajaan 1949 (Government Contracts Act) - Kontrak dengan kerajaan, tender
-6. Akta Tatacara Kewangan 1957 (Financial Procedure Act) - Pengurusan kewangan kerajaan
-7. Akta Perintah Am (Revised 1980) (General Orders) - Peraturan perkhidmatan awam
-8. Akta Tatacara Jenayah 1999 (Criminal Procedure Code) - Prosedur jenayah, tangkapan, siasatan
-9. Akta Kanun Keseksaan (Penal Code) - Jenayah am, penipuan, pecah amanah
-10. Akta-akta Lain (Other Acts) - Tidak sesuai dengan kategori di atas
+**Pilih dari 8 kategori berikut:**
+1. Rasuah & Suapan - Menerima atau memberi rasuah, suapan, gratifikasi
+2. Pecah Amanah - Menggunakan wang atau harta orang lain untuk kegunaan sendiri
+3. Penipuan - Menipu untuk mendapat harta atau wang
+4. Pemalsuan - Membuat dokumen palsu, sijil palsu, tandatangan palsu
+5. Keterangan Palsu - Memberi keterangan palsu, laporan palsu, bukti palsu
+6. Pemerasan - Memaksa orang beri wang atau harta dengan ugutan
+7. Wang Haram - Pengubahan wang haram, pembiayaan keganasan
+8. Lain-lain - Tidak sesuai dengan kategori di atas
 
-Jawab dengan NAMA AKTA sahaja (contoh: "Akta SPRM 2009" atau "Akta Kanun Keseksaan"). Jangan beri penjelasan tambahan."""
+Jawab dengan NAMA KATEGORI sahaja (contoh: "Rasuah & Suapan" atau "Pecah Amanah").
+Jangan beri penjelasan tambahan.
 
-        result = self.call_openrouter(prompt=prompt, max_tokens=150, temperature=0.2)
+Jawapan:"""
+
+        category_result = self.call_openrouter(category_prompt, max_tokens=50, temperature=0.2)
+
+        if not category_result:
+            print("⚠️  Category determination failed")
+            return None
+
+        category = category_result.strip()
+        print(f"✅ Category determined: {category}")
+
+        # Step 2: Get sections in that category
+        sections_in_category = []
+        if akta_service:
+            try:
+                sections_in_category = akta_service.get_sections_by_category(category)
+                print(f"📋 Found {len(sections_in_category)} sections in category '{category}'")
+            except Exception as e:
+                print(f"⚠️  Error getting sections: {e}")
+
+        # If no sections found or service not available, fallback
+        if not sections_in_category:
+            print("⚠️  No sections found, using direct AI selection")
+            fallback_prompt = f"""Berdasarkan aduan rasuah berikut, tentukan seksyen undang-undang yang berkaitan.
+
+{sector_context}
+Kategori: {category}
+
+**Ringkasan 5W1H:**
+{w1h_text}
+
+**Deskripsi:**
+{complaint_text[:500]}
+
+Nyatakan seksyen Kanun Keseksaan yang paling sesuai.
+Jawab dalam format: "Seksyen XXX - Penerangan ringkas"
+(Contoh: "Seksyen 161 - Mengambil suapan bersangkut perbuatan resmi")
+
+Jawapan:"""
+
+            result = self.call_openrouter(fallback_prompt, max_tokens=150, temperature=0.2)
+
+        else:
+            # Step 3: AI chooses specific section from category
+            print(f"Step 2: Choosing specific section from {len(sections_in_category)} options...")
+
+            options_text = ""
+            for i, section in enumerate(sections_in_category, 1):
+                options_text += f"{i}. {section['section_code']} - {section['section_title']}\n"
+
+            section_prompt = f"""Berdasarkan aduan rasuah berikut, pilih SATU seksyen yang PALING SESUAI dari senarai.
+
+{sector_context}
+Kategori: {category}
+
+**Ringkasan 5W1H:**
+{w1h_text}
+
+**Deskripsi:**
+{complaint_text[:500]}
+
+**Pilih dari seksyen berikut:**
+{options_text}
+
+Pilih seksyen yang paling tepat berdasarkan perbuatan yang diadukan.
+Jawab dalam format tepat: "Seksyen XXX - Penerangan"
+(Contoh: "Seksyen 161 - Mengambil suapan bersangkut perbuatan resmi")
+
+Jawapan:"""
+
+            result = self.call_openrouter(section_prompt, max_tokens=150, temperature=0.2)
 
         if result:
             akta = result.strip()
+            # Clean up response
+            if akta.startswith('"') and akta.endswith('"'):
+                akta = akta[1:-1]
             print(f"✅ Akta determined: {akta}")
             return akta
 

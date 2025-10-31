@@ -213,6 +213,7 @@ class Database:
 
         create_indexes = """
         CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(status);
+        CREATE INDEX IF NOT EXISTS idx_complaints_officer_status ON complaints(officer_status);
         CREATE INDEX IF NOT EXISTS idx_complaints_submitted_at ON complaints(submitted_at);
         CREATE INDEX IF NOT EXISTS idx_complaints_category ON complaints(category);
         CREATE INDEX IF NOT EXISTS idx_documents_complaint_id ON complaint_documents(complaint_id);
@@ -308,6 +309,35 @@ class Database:
                 WHERE table_name = 'complaints' AND column_name = 'embedding'
             ) THEN
                 ALTER TABLE complaints ADD COLUMN embedding FLOAT[];
+            END IF;
+
+            -- Add officer review columns
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'complaints' AND column_name = 'officer_status'
+            ) THEN
+                ALTER TABLE complaints ADD COLUMN officer_status VARCHAR(50);
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'complaints' AND column_name = 'officer_remarks'
+            ) THEN
+                ALTER TABLE complaints ADD COLUMN officer_remarks TEXT;
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'complaints' AND column_name = 'reviewed_by'
+            ) THEN
+                ALTER TABLE complaints ADD COLUMN reviewed_by VARCHAR(100);
+            END IF;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'complaints' AND column_name = 'reviewed_at'
+            ) THEN
+                ALTER TABLE complaints ADD COLUMN reviewed_at TIMESTAMP;
             END IF;
         END $$;
         """
