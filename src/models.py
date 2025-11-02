@@ -29,6 +29,7 @@ class ComplaintDocument(BaseModel):
     file_size: int
     file_type: str
     uploaded_at: datetime
+    download_url: Optional[str] = None  # URL to download/preview the file
 
 
 class SimilarCase(BaseModel):
@@ -159,3 +160,37 @@ class EvaluationOptions(BaseModel):
     source_type_options: List[str]
     currency_types: List[str]
     officer_status_options: List[str]
+
+
+class AuditLog(BaseModel):
+    """Audit log entry for tracking user actions"""
+    id: int
+    user_id: Optional[str] = None
+    user_role: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    action: str
+    entity_type: str
+    entity_id: Optional[int] = None
+    description: Optional[str] = None
+    changes: Optional[dict] = None
+    metadata: Optional[dict] = None
+    timestamp: datetime
+    endpoint: Optional[str] = None
+    http_method: Optional[str] = None
+    status_code: Optional[int] = None
+    success: bool = True
+    error_message: Optional[str] = None
+
+
+class AuditLogFilter(BaseModel):
+    """Filter parameters for audit log queries"""
+    user_id: Optional[str] = None
+    action: Optional[str] = None
+    entity_type: Optional[str] = None
+    entity_id: Optional[int] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    ip_address: Optional[str] = None
+    limit: int = 100
+    offset: int = 0

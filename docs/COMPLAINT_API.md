@@ -53,12 +53,12 @@ db.create_tables()
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `full_name` | string | No | Full name of complainant |
+| `full_name` | string | No | Full name of complainant (optional for anonymous) |
 | `ic_number` | string | No | IC/Passport number |
-| `phone_number` | string | **Yes** | Contact phone number |
+| `phone_number` | string | No | Contact phone number |
 | `email` | string | No | Email address |
 | `complaint_title` | string | **Yes** | Title/subject of complaint |
-| `category` | string | **Yes** | Complaint category |
+| `category` | string | No | Complaint category |
 | `urgency_level` | string | No | Urgency: Rendah/Sederhana/Tinggi/Kritikal (default: Sederhana) |
 | `complaint_description` | string | **Yes** | Detailed complaint description |
 | `files` | file[] | No | Supporting documents (PDF, PNG, JPG, JPEG, max 10MB each) |
@@ -353,6 +353,202 @@ console.log('Similar cases:', complaint.similar_cases);
 const response = await fetch('http://localhost:8000/complaints?status=pending&limit=20');
 const data = await response.json();
 console.log(`Found ${data.total} pending complaints`);
+```
+
+---
+
+### 4. Update Complaint
+
+**Endpoint:** `PUT /complaints/{complaint_id}`
+
+**Description:** Update complaint fields (for manual editing by officers). Editing 5W1H fields triggers automatic re-processing.
+
+**Request Body:**
+```json
+{
+  "w1h_what": "Updated description of what happened",
+  "w1h_who": "Updated persons involved",
+  "classification": "CRIS"
+}
+```
+
+**Editable Fields:**
+- `complaint_title`, `complaint_description`, `category`, `urgency_level`
+- `w1h_what`, `w1h_who`, `w1h_when`, `w1h_where`, `w1h_why`, `w1h_how`, `w1h_summary`
+- `sector`, `akta`, `classification`, `classification_confidence`, `status`
+
+**Response:**
+```json
+{
+  "id": 123,
+  "complaint_title": "Updated Title",
+  "w1h_what": "Updated description",
+  "processed_at": "2025-01-15T10:30:00"
+}
+```
+
+**Example:**
+```javascript
+const response = await fetch('http://localhost:8000/complaints/123', {
+  method: 'PUT',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    w1h_what: "Pegawai menerima wang rasuah RM100,000",
+    classification: "CRIS"
+  })
+});
+```
+
+---
+
+### 5. Get Unassigned Complaints
+
+**Endpoint:** `GET /complaints/unassigned`
+
+**Description:** List complaints that are not assigned to any case.
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `limit` | integer | Number of results (default: 50) |
+| `offset` | integer | Pagination offset (default: 0) |
+
+**Response:**
+```json
+{
+  "total": 45,
+  "complaints": [...],
+  "limit": 50,
+  "offset": 0,
+  "message": "Found 45 unassigned complaint(s)"
+}
+```
+
+---
+
+### 6. Officer Review & Status Update
+
+**Endpoint:** `PUT /complaints/{complaint_id}/officer-review`
+
+**Description:** Officer manually reviews complaint and updates status.
+
+**Request Body:**
+```json
+{
+  "officer_status": "nfa",
+  "officer_remarks": "After review, this is not a corruption case",
+  "reviewed_by": "officer_ahmad"
+}
+```
+
+**Valid Statuses:**
+- `pending_review` - Waiting for officer review (default after AI processing)
+- `nfa` - No Further Action (not corruption, close complaint)
+- `escalated` - Escalate for investigation
+- `investigating` - Currently under investigation
+- `closed` - Investigation completed and closed
+
+**Response:**
+```json
+{
+  "message": "Officer review updated successfully",
+  "complaint_id": 123,
+  "officer_status": "nfa",
+  "reviewed_by": "officer_ahmad",
+  "reviewed_at": "2025-01-15T14:30:00"
+}
+```
+
+---
+
+### 7. Download Document
+
+**Endpoint:** `GET /documents/{document_id}/download`
+
+**Description:** Download or preview a complaint document.
+
+**Response:** File stream with appropriate Content-Type header
+
+**Frontend Usage:**
+```javascript
+// Image preview
+<img src={`http://localhost:8000/documents/${doc.id}/download`} />
+
+// Download link
+<a href={`http://localhost:8000/documents/${doc.id}/download`} download>
+  Download {doc.original_filename}
+</a>
+```
+
+**Note:** Always use the `download_url` field from complaint details response.
+
+---
+
+### 8. Get Complaint's Case
+
+**Endpoint:** `GET /complaints/{complaint_id}/case`
+
+**Description:** Get the case that a complaint belongs to.
+
+**Response:**
+```json
+{
+  "id": 5,
+  "case_number": "CASE-2025-0005",
+  "case_title": "JKR Tender Scandal",
+  "status": "open",
+  "complaint_count": 3,
+  "complaints": [...]
+}
+```
+
+**Response 404:** If complaint is not in any case
+
+---
+
+### 9. Move Complaint to Existing Case
+
+**Endpoint:** `POST /complaints/{complaint_id}/move-to-case/{target_case_id}`
+
+**Description:** Move a complaint from its current case to another existing case.
+
+**Query Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `added_by` | string | Username of officer (default: "officer") |
+
+**Response:**
+```json
+{
+  "message": "Complaint 123 moved to case CASE-2025-0005",
+  "previous_case": "CASE-2025-0003",
+  "target_case": { /* case details */ }
+}
+```
+
+---
+
+### 10. Move Complaint to New Case
+
+**Endpoint:** `POST /complaints/{complaint_id}/move-to-new-case`
+
+**Description:** Move a complaint from its current case to a new standalone case.
+
+**Request Body:**
+```json
+{
+  "case_title": "Kes Rasuah Jabatan XYZ",
+  "added_by": "officer_ahmad"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Complaint 123 moved to new case CASE-2025-0010",
+  "previous_case": "CASE-2025-0005",
+  "new_case": { /* case details */ }
+}
 ```
 
 ---

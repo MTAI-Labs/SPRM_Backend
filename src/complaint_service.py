@@ -39,14 +39,22 @@ class ComplaintService:
         Returns:
             complaint_id: ID of inserted complaint
         """
+        # Set default category if not provided
+        if 'category' not in complaint_data or not complaint_data['category']:
+            complaint_data['category'] = 'Umum'  # Default category
+
+        # Set default urgency_level if not provided
+        if 'urgency_level' not in complaint_data or not complaint_data['urgency_level']:
+            complaint_data['urgency_level'] = 'Sederhana'
+
         query = """
         INSERT INTO complaints (
             full_name, ic_number, phone_number, email,
-            complaint_title, complaint_description,
+            complaint_title, complaint_description, category, urgency_level,
             status
         ) VALUES (
             %(full_name)s, %(ic_number)s, %(phone_number)s, %(email)s,
-            %(complaint_title)s, %(complaint_description)s,
+            %(complaint_title)s, %(complaint_description)s, %(category)s, %(urgency_level)s,
             'pending'
         ) RETURNING id
         """

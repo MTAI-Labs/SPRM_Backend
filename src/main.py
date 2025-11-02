@@ -31,6 +31,8 @@ from classification_service import ClassificationService
 from case_service import CaseService
 from analytics_service import AnalyticsService
 from models import ComplaintSubmission, ComplaintResponse, ComplaintDetail, ComplaintEvaluation, EvaluationOptions, OfficerReview
+from audit_service import AuditService
+from audit_middleware import AuditMiddleware, get_current_context, update_context
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -39,27 +41,33 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Create uploads directory
+# Create uploads directory BEFORE mounting
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# Mount uploads directory as static files for frontend access
-# Frontend can access files via: http://localhost:8000/uploads/filename
+# Mount uploads directory as static files for direct access
+# NOTE: Prefer using /documents/{id}/download endpoint instead of direct file access
+# Direct access example: /uploads/complaint_1_20251102_123456_file.pdf
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# Add CORS middleware - FULLY OPEN FOR DEVELOPMENT
+# WARNING: In production, restrict this to specific origins!
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],           # Allow ALL origins
+    allow_credentials=False,        # Must be False when using "*"
+    allow_methods=["*"],           # Allow all HTTP methods
+    allow_headers=["*"],           # Allow all headers
+    expose_headers=["*"],          # Expose all headers
+)
+
+# Add Audit middleware to capture request context
+app.add_middleware(AuditMiddleware)
+
 # Thread pool for background processing
-# max_workers=1 means sequential processing (one complaint at a time)
-# Increase to 3-5 if you want concurrent processing in the future
-executor = ThreadPoolExecutor(max_workers=5)
+# max_workers controls how many complaints can be processed concurrently
+# Increased to 10 for faster processing (DB pool increased to 50 to support this)
+executor = ThreadPoolExecutor(max_workers=10)
 
 # Global instances
 classifier: Optional[SPRMClassifier] = None
@@ -663,6 +671,8 @@ async def submit_complaint(
     email: Optional[str] = Form(None),
     complaint_title: str = Form(...),
     complaint_description: str = Form(...),
+    category: Optional[str] = Form(None),
+    urgency_level: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[])
 ):
     """
@@ -686,12 +696,32 @@ async def submit_complaint(
             'phone_number': phone_number,
             'email': email,
             'complaint_title': complaint_title,
-            'complaint_description': complaint_description
+            'complaint_description': complaint_description,
+            'category': category,
+            'urgency_level': urgency_level
         }
 
         # Save complaint to database
         complaint_id = service.save_complaint(complaint_data)
         print(f"✅ Complaint {complaint_id} saved to database")
+
+        # Audit log: complaint submission
+        context = get_current_context()
+        AuditService.log_action(
+            action="complaint.create",
+            entity_type="complaint",
+            entity_id=complaint_id,
+            user_id=context.get('user_id') if context else None,
+            ip_address=context.get('ip_address') if context else None,
+            user_agent=context.get('user_agent') if context else None,
+            description=f"New complaint submitted: {complaint_title[:100]}",
+            metadata={
+                'has_documents': len(files) > 0 if files else False,
+                'is_anonymous': not full_name
+            },
+            endpoint=context.get('endpoint') if context else None,
+            http_method=context.get('http_method') if context else None
+        )
 
         # Handle file uploads
         uploaded_files = []
@@ -727,6 +757,24 @@ async def submit_complaint(
                     })
 
                     print(f"✅ File uploaded: {file.filename} ({file_size} bytes)")
+
+                    # Audit log: document upload
+                    AuditService.log_action(
+                        action="document.upload",
+                        entity_type="document",
+                        entity_id=doc_id,
+                        user_id=context.get('user_id') if context else None,
+                        ip_address=context.get('ip_address') if context else None,
+                        user_agent=context.get('user_agent') if context else None,
+                        description=f"Document uploaded: {file.filename}",
+                        metadata={
+                            'complaint_id': complaint_id,
+                            'file_size': file_size,
+                            'file_type': file.content_type
+                        },
+                        endpoint=context.get('endpoint') if context else None,
+                        http_method=context.get('http_method') if context else None
+                    )
 
             # Update document count
             service.update_document_count(complaint_id, len(uploaded_files))
@@ -768,8 +816,10 @@ async def get_complaint_details(complaint_id: int):
         if not complaint:
             raise HTTPException(status_code=404, detail="Complaint not found")
 
-        # Get documents
+        # Get documents and add download URLs
         documents = service.get_complaint_documents(complaint_id)
+        for doc in documents:
+            doc['download_url'] = f"/documents/{doc['id']}/download"
 
         # Get similar cases
         similar_cases = service.get_similar_cases(complaint_id)
@@ -979,6 +1029,11 @@ async def update_complaint(complaint_id: int, updates: Dict[str, Any], backgroun
     """
 
     try:
+        # Get current state for audit logging
+        with db.get_cursor() as cursor:
+            cursor.execute(f"SELECT {', '.join(update_fields.keys())} FROM complaints WHERE id = %s", (complaint_id,))
+            before_state = dict(cursor.fetchone()) if cursor.rowcount > 0 else {}
+
         with db.get_cursor() as cursor:
             # Execute update
             values = list(update_fields.values()) + [complaint_id]
@@ -989,6 +1044,23 @@ async def update_complaint(complaint_id: int, updates: Dict[str, Any], backgroun
                 raise HTTPException(status_code=404, detail="Complaint not found")
 
         print(f"✅ Complaint {complaint_id} updated: {', '.join(update_fields.keys())}")
+
+        # Audit log: complaint update
+        context = get_current_context()
+        from audit_service import track_changes
+        AuditService.log_action(
+            action="complaint.update",
+            entity_type="complaint",
+            entity_id=complaint_id,
+            user_id=updates.get('updated_by') or (context.get('user_id') if context else None),
+            ip_address=context.get('ip_address') if context else None,
+            user_agent=context.get('user_agent') if context else None,
+            description=f"Complaint updated: {', '.join(update_fields.keys())}",
+            changes=track_changes(before_state, update_fields),
+            metadata={'w1h_edited': w1h_edited},
+            endpoint=context.get('endpoint') if context else None,
+            http_method=context.get('http_method') if context else None
+        )
 
         # If 5W1H was edited, trigger re-classification and re-embedding
         if w1h_edited:
@@ -1273,6 +1345,26 @@ async def create_case(
 
         # Get case details
         case = service.get_case_details(case_id)
+
+        # Audit log: case creation
+        context = get_current_context()
+        AuditService.log_action(
+            action="case.create",
+            entity_type="case",
+            entity_id=case_id,
+            user_id=added_by,
+            ip_address=context.get('ip_address') if context else None,
+            user_agent=context.get('user_agent') if context else None,
+            description=f"Case created: {case['case_number']}",
+            metadata={
+                'case_title': case_title,
+                'complaint_count': len(complaint_ids),
+                'complaint_ids': complaint_ids
+            },
+            endpoint=context.get('endpoint') if context else None,
+            http_method=context.get('http_method') if context else None
+        )
+
         return {
             "message": "Case created successfully",
             "case_id": case_id,
@@ -1303,6 +1395,22 @@ async def update_case(case_id: int, updates: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="Failed to update case")
 
         case = service.get_case_details(case_id)
+
+        # Audit log: case update
+        context = get_current_context()
+        AuditService.log_action(
+            action="case.update",
+            entity_type="case",
+            entity_id=case_id,
+            user_id=updates.get('updated_by') or (context.get('user_id') if context else None),
+            ip_address=context.get('ip_address') if context else None,
+            user_agent=context.get('user_agent') if context else None,
+            description=f"Case updated: {case['case_number']}",
+            metadata={'updated_fields': list(updates.keys())},
+            endpoint=context.get('endpoint') if context else None,
+            http_method=context.get('http_method') if context else None
+        )
+
         return {
             "message": "Case updated successfully",
             "case": case
@@ -1324,9 +1432,28 @@ async def delete_case(case_id: int):
     service = get_case_service()
 
     try:
+        # Get case details before deletion for audit log
+        case = service.get_case_details(case_id)
+        case_number = case.get('case_number') if case else str(case_id)
+
         success = service.delete_case(case_id)
         if not success:
             raise HTTPException(status_code=404, detail="Case not found or already deleted")
+
+        # Audit log: case deletion
+        context = get_current_context()
+        AuditService.log_action(
+            action="case.delete",
+            entity_type="case",
+            entity_id=case_id,
+            user_id=context.get('user_id') if context else None,
+            ip_address=context.get('ip_address') if context else None,
+            user_agent=context.get('user_agent') if context else None,
+            description=f"Case deleted: {case_number}",
+            metadata={'case_number': case_number},
+            endpoint=context.get('endpoint') if context else None,
+            http_method=context.get('http_method') if context else None
+        )
 
         return {"message": f"Case {case_id} deleted successfully"}
     except Exception as e:
@@ -1362,6 +1489,24 @@ async def add_complaint_to_case(
 
         # Add complaint to case
         service.add_complaint_to_case(case_id, complaint_id, added_by=added_by)
+
+        # Audit log: complaint added to case
+        context = get_current_context()
+        AuditService.log_action(
+            action="case.add_complaint",
+            entity_type="case",
+            entity_id=case_id,
+            user_id=added_by,
+            ip_address=context.get('ip_address') if context else None,
+            user_agent=context.get('user_agent') if context else None,
+            description=f"Complaint {complaint_id} added to case {case['case_number']}",
+            metadata={
+                'complaint_id': complaint_id,
+                'case_number': case['case_number']
+            },
+            endpoint=context.get('endpoint') if context else None,
+            http_method=context.get('http_method') if context else None
+        )
 
         return {
             "message": f"Complaint {complaint_id} added to case {case_id}",
@@ -1561,6 +1706,26 @@ async def save_complaint_evaluation(complaint_id: int, evaluation: ComplaintEval
             if not result:
                 raise HTTPException(status_code=404, detail="Complaint not found")
 
+            # Audit log: complaint evaluation
+            context = get_current_context()
+            AuditService.log_action(
+                action="complaint.evaluate",
+                entity_type="complaint",
+                entity_id=complaint_id,
+                user_id=evaluation.evaluated_by,
+                ip_address=context.get('ip_address') if context else None,
+                user_agent=context.get('user_agent') if context else None,
+                description=f"Complaint evaluated by {evaluation.evaluated_by}",
+                metadata={
+                    'type_of_information': evaluation.type_of_information,
+                    'source_type': evaluation.source_type,
+                    'sector': evaluation.sector,
+                    'sub_sector': evaluation.sub_sector
+                },
+                endpoint=context.get('endpoint') if context else None,
+                http_method=context.get('http_method') if context else None
+            )
+
             return {
                 "message": "Evaluation saved successfully",
                 "complaint_id": complaint_id,
@@ -1626,6 +1791,24 @@ async def update_officer_review(complaint_id: int, review: OfficerReview):
 
             if not result:
                 raise HTTPException(status_code=404, detail="Complaint not found")
+
+            # Audit log: officer review
+            context = get_current_context()
+            AuditService.log_action(
+                action="complaint.review",
+                entity_type="complaint",
+                entity_id=complaint_id,
+                user_id=review.reviewed_by,
+                ip_address=context.get('ip_address') if context else None,
+                user_agent=context.get('user_agent') if context else None,
+                description=f"Complaint reviewed by {review.reviewed_by} - Status: {review.officer_status}",
+                metadata={
+                    'officer_status': review.officer_status,
+                    'has_remarks': bool(review.officer_remarks)
+                },
+                endpoint=context.get('endpoint') if context else None,
+                http_method=context.get('http_method') if context else None
+            )
 
             return {
                 "message": "Officer review updated successfully",
@@ -2404,6 +2587,225 @@ async def get_letter(letter_id: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting letter: {str(e)}")
+
+
+# ============================================================================
+# AUDIT LOG ENDPOINTS (ADMIN PANEL)
+# ============================================================================
+
+@app.get("/admin/audit-logs")
+async def get_audit_logs(
+    user_id: Optional[str] = None,
+    action: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """
+    Get audit logs with optional filters (Admin only)
+
+    **Query Parameters:**
+    - user_id: Filter by user/officer ID
+    - action: Filter by action type (e.g., 'complaint.create', 'case.update')
+    - entity_type: Filter by entity type (complaint, case, document)
+    - entity_id: Filter by specific entity ID
+    - start_date: Filter logs after this date (ISO format)
+    - end_date: Filter logs before this date (ISO format)
+    - ip_address: Filter by IP address
+    - limit: Maximum results (default: 100)
+    - offset: Pagination offset (default: 0)
+
+    **Example:**
+    ```
+    GET /admin/audit-logs?user_id=officer123&action=complaint.update&limit=50
+    ```
+
+    **Returns:**
+    List of audit log entries with metadata
+    """
+    try:
+        # Convert date strings to datetime if provided
+        from datetime import datetime
+        start_dt = datetime.fromisoformat(start_date) if start_date else None
+        end_dt = datetime.fromisoformat(end_date) if end_date else None
+
+        logs = AuditService.get_logs(
+            user_id=user_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            start_date=start_dt,
+            end_date=end_dt,
+            ip_address=ip_address,
+            limit=limit,
+            offset=offset
+        )
+
+        return {
+            "total": len(logs),
+            "limit": limit,
+            "offset": offset,
+            "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving audit logs: {str(e)}")
+
+
+@app.get("/admin/audit-logs/entity/{entity_type}/{entity_id}")
+async def get_entity_audit_history(entity_type: str, entity_id: int, limit: int = 50):
+    """
+    Get complete audit history for a specific entity
+
+    **Path Parameters:**
+    - entity_type: Type of entity (complaint, case, document)
+    - entity_id: ID of the entity
+
+    **Example:**
+    ```
+    GET /admin/audit-logs/entity/complaint/123
+    ```
+
+    **Returns:**
+    All audit log entries for the specified entity
+    """
+    try:
+        logs = AuditService.get_entity_history(entity_type, entity_id, limit=limit)
+
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "total": len(logs),
+            "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving entity history: {str(e)}")
+
+
+@app.get("/admin/audit-logs/user/{user_id}")
+async def get_user_audit_activity(user_id: str, limit: int = 100):
+    """
+    Get all activity for a specific user/officer
+
+    **Path Parameters:**
+    - user_id: User/officer ID
+
+    **Example:**
+    ```
+    GET /admin/audit-logs/user/officer123?limit=50
+    ```
+
+    **Returns:**
+    All audit log entries for the specified user
+    """
+    try:
+        logs = AuditService.get_user_activity(user_id, limit=limit)
+
+        return {
+            "user_id": user_id,
+            "total": len(logs),
+            "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving user activity: {str(e)}")
+
+
+@app.get("/admin/audit-logs/ip/{ip_address}")
+async def get_ip_audit_activity(ip_address: str, limit: int = 100):
+    """
+    Get all activity from a specific IP address
+
+    **Path Parameters:**
+    - ip_address: IP address to filter by
+
+    **Example:**
+    ```
+    GET /admin/audit-logs/ip/192.168.1.100
+    ```
+
+    **Returns:**
+    All audit log entries from the specified IP
+    """
+    try:
+        logs = AuditService.get_logs_by_ip(ip_address, limit=limit)
+
+        return {
+            "ip_address": ip_address,
+            "total": len(logs),
+            "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving IP activity: {str(e)}")
+
+
+@app.get("/admin/audit-logs/recent")
+async def get_recent_audit_activity(limit: int = 50):
+    """
+    Get recent activity across all users
+
+    **Query Parameters:**
+    - limit: Maximum results (default: 50)
+
+    **Example:**
+    ```
+    GET /admin/audit-logs/recent?limit=100
+    ```
+
+    **Returns:**
+    Recent audit log entries sorted by timestamp (descending)
+    """
+    try:
+        logs = AuditService.get_recent_activity(limit=limit)
+
+        return {
+            "total": len(logs),
+            "logs": logs
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving recent activity: {str(e)}")
+
+
+@app.get("/admin/audit-logs/stats")
+async def get_audit_stats():
+    """
+    Get statistics about audit logs
+
+    **Returns:**
+    - Total logs count
+    - Unique users count
+    - Unique IPs count
+    - Success/failure counts
+    """
+    try:
+        stats = AuditService.get_action_stats()
+
+        return {
+            "statistics": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving audit stats: {str(e)}")
+
+
+@app.get("/admin/audit-logs/breakdown")
+async def get_audit_action_breakdown():
+    """
+    Get breakdown of actions by type
+
+    **Returns:**
+    List of action types with counts, sorted by frequency
+    """
+    try:
+        breakdown = AuditService.get_action_breakdown()
+
+        return {
+            "total": len(breakdown),
+            "breakdown": breakdown
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving action breakdown: {str(e)}")
 
 
 # ============================================================================

@@ -974,6 +974,10 @@ Your dashboard should show:
 3. **Processing Pipeline** - Status tracking for each complaint
 4. **Case Management** - Officers can organize and investigate
 
-**Questions?** Check `/docs` endpoint at http://localhost:8000/docs for interactive API testing!
+**Need more details?**
+- **Interactive API Docs:** http://localhost:8000/docs
+- **Complete API Reference:** See [API_SPECIFICATION.md](API_SPECIFICATION.md) for comprehensive documentation
+- **Complaint API Guide:** See [COMPLAINT_API.md](COMPLAINT_API.md) for complaint-specific endpoints
+- **Frontend Integration:** See [FRONTEND_GUIDE.md](FRONTEND_GUIDE.md) for related cases feature
 
 **Good luck! 🚀**

@@ -8,7 +8,19 @@
       "Bash(python:*)",
       "Bash(psql:*)",
       "Bash(pip show:*)",
-      "Bash(set PGPASSWORD=%DB_PASSWORD%)"
+      "Bash(set PGPASSWORD=%DB_PASSWORD%)",
+      "Bash(conda activate:*)",
+      "Bash(netstat:*)",
+      "Bash(python3 -c:*)",
+      "Bash(nginx:*)",
+      "Bash(sudo lsof:*)",
+      "Bash(sudo ln:*)",
+      "Bash(sudo nginx:*)",
+      "Bash(sudo systemctl restart:*)",
+      "Bash(sudo systemctl status:*)",
+      "Bash(host:*)",
+      "Bash(nslookup:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []

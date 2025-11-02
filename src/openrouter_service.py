@@ -21,8 +21,8 @@ class OpenRouterService:
             api_key: OpenRouter API key (default from environment)
         """
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-        self.base_url = "https://openrouter.ai/api/v1"
-        self.model = os.getenv("OPENROUTER_MODEL", "qwen/qwen-2.5-vl-72b-instruct")
+        self.base_url = "http://bgpu123.nttdc3.mtailabs.ai:9006/v1"
+        self.model = os.getenv("OPENROUTER_MODEL", "Qwen/Qwen3-VL-32B-Instruct")
         self.timeout = int(os.getenv("VLLM_TIMEOUT", "120"))
 
         if not self.api_key:
